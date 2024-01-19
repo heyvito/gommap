@@ -1,166 +1,200 @@
 package gommap_test
 
 import (
-	"io/ioutil"
-	. "launchpad.net/gocheck"
-	"launchpad.net/gommap"
+	"fmt"
+	"github.com/heyvito/gommap"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"os"
 	"path"
 	"syscall"
 	"testing"
 )
 
-func TestAll(t *testing.T) {
-	TestingT(t)
-}
-
-type S struct {
-	file *os.File
-}
-
-var _ = Suite(&S{})
-
 var testData = []byte("0123456789ABCDEF")
 
-func (s *S) SetUpTest(c *C) {
-	testPath := path.Join(c.MkDir(), "test.txt")
-	file, err := os.Create(testPath)
+func Example() {
+	filePath := "/tmp/mapped_file"
+	file, err := os.Create(filePath)
 	if err != nil {
-		panic(err.Error())
+		panic("Creating temporary file failed: " + err.Error())
 	}
-	s.file = file
-	s.file.Write(testData)
-}
+	_, err = file.Write([]byte("0123456789ABCDEF"))
+	if err != nil {
+		panic("Writing to temporary file failed: " + err.Error())
+	}
 
-func (s *S) TearDownTest(c *C) {
-	s.file.Close()
-}
+	mmap, err := gommap.Map(file.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_SHARED)
+	if err != nil {
+		panic("Initializing memory mapping failed: " + err.Error())
+	}
 
-func (s *S) TestUnsafeUnmap(c *C) {
-	mmap, err := gommap.Map(s.file.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_SHARED)
-	c.Assert(err, IsNil)
-	c.Assert(mmap.UnsafeUnmap(), IsNil)
-}
-
-func (s *S) TestReadWrite(c *C) {
-	mmap, err := gommap.Map(s.file.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_SHARED)
-	c.Assert(err, IsNil)
 	defer mmap.UnsafeUnmap()
-	c.Assert([]byte(mmap), DeepEquals, testData)
 
 	mmap[9] = 'X'
-	mmap.Sync(gommap.MS_SYNC)
+	err = mmap.Sync(gommap.MS_SYNC)
+	if err != nil {
+		panic("mmap sync failed: " + err.Error())
+	}
 
-	fileData, err := ioutil.ReadFile(s.file.Name())
-	c.Assert(err, IsNil)
-	c.Assert(fileData, DeepEquals, []byte("012345678XABCDEF"))
+	fileData, err := os.ReadFile(filePath)
+	if err != nil {
+		panic("Reading temporary file failed: " + err.Error())
+	}
+	fmt.Println(string(fileData))
+	// Output: 012345678XABCDEF
 }
 
-func (s *S) TestSliceMethods(c *C) {
-	mmap, err := gommap.Map(s.file.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_SHARED)
-	c.Assert(err, IsNil)
+func setup(t *testing.T) *os.File {
+	t.Helper()
+	testPath := path.Join(t.TempDir(), "test.txt")
+	file, err := os.Create(testPath)
+	require.NoError(t, err)
+	_, err = file.Write(testData)
+	require.NoError(t, err)
+	return file
+}
+
+func TestUnsafeUnmap(t *testing.T) {
+	f := setup(t)
+	mmap, err := gommap.Map(f.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_SHARED)
+	require.NoError(t, err)
+	require.NoError(t, mmap.UnsafeUnmap())
+}
+
+func TestReadWrite(t *testing.T) {
+	f := setup(t)
+	mmap, err := gommap.Map(f.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_SHARED)
+	require.NoError(t, err)
 	defer mmap.UnsafeUnmap()
-	c.Assert([]byte(mmap), DeepEquals, testData)
+	assert.Equal(t, []byte(mmap), testData)
 
 	mmap[9] = 'X'
-	mmap[7:10].Sync(gommap.MS_SYNC)
+	require.NoError(t, mmap.Sync(gommap.MS_SYNC))
 
-	fileData, err := ioutil.ReadFile(s.file.Name())
-	c.Assert(err, IsNil)
-	c.Assert(fileData, DeepEquals, []byte("012345678XABCDEF"))
+	fileData, err := os.ReadFile(f.Name())
+	require.NoError(t, err)
+	assert.Equal(t, fileData, []byte("012345678XABCDEF"))
 }
 
-func (s *S) TestProtFlagsAndErr(c *C) {
-	testPath := s.file.Name()
-	s.file.Close()
+func TestSliceMethods(t *testing.T) {
+	f := setup(t)
+	mmap, err := gommap.Map(f.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_SHARED)
+	require.NoError(t, err)
+	defer mmap.UnsafeUnmap()
+	assert.Equal(t, []byte(mmap), testData)
+
+	mmap[9] = 'X'
+
+	// This may fail on different OSes, so let's not assert for whether it
+	// returns an error or not.
+	_ = mmap[7:10].Sync(gommap.MS_SYNC)
+
+	fileData, err := os.ReadFile(f.Name())
+	require.NoError(t, err)
+	assert.Equal(t, fileData, []byte("012345678XABCDEF"))
+}
+
+func TestProtFlagsAndErr(t *testing.T) {
+	f := setup(t)
+	testPath := f.Name()
+	err := f.Close()
+	require.NoError(t, err)
 	file, err := os.Open(testPath)
-	c.Assert(err, IsNil)
-	s.file = file
-	_, err = gommap.Map(s.file.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_SHARED)
+	require.NoError(t, err)
+	f = file
+	_, err = gommap.Map(f.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_SHARED)
 	// For this to happen, both the error and the protection flag must work.
-	c.Assert(err, Equals, syscall.EACCES)
+	assert.Equal(t, syscall.EACCES, err)
 }
 
-func (s *S) TestFlags(c *C) {
-	mmap, err := gommap.Map(s.file.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_PRIVATE)
-	c.Assert(err, IsNil)
+func TestFlags(t *testing.T) {
+	f := setup(t)
+	mmap, err := gommap.Map(f.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_PRIVATE)
+	require.NoError(t, err)
 	defer mmap.UnsafeUnmap()
 
 	mmap[9] = 'X'
-	mmap.Sync(gommap.MS_SYNC)
+	require.NoError(t, mmap.Sync(gommap.MS_SYNC))
 
-	fileData, err := ioutil.ReadFile(s.file.Name())
-	c.Assert(err, IsNil)
+	fileData, err := os.ReadFile(f.Name())
+	require.NoError(t, err)
 	// Shouldn't have written, since the map is private.
-	c.Assert(fileData, DeepEquals, []byte("0123456789ABCDEF"))
+	assert.Equal(t, fileData, []byte("0123456789ABCDEF"))
 }
 
-func (s *S) TestAdvise(c *C) {
-	mmap, err := gommap.Map(s.file.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_PRIVATE)
-	c.Assert(err, IsNil)
+func TestAdvise(t *testing.T) {
+	f := setup(t)
+	mmap, err := gommap.Map(f.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_PRIVATE)
+	require.NoError(t, err)
 	defer mmap.UnsafeUnmap()
 
 	// A bit tricky to blackbox-test these.
 	err = mmap.Advise(gommap.MADV_RANDOM)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	err = mmap.Advise(9999)
-	c.Assert(err, ErrorMatches, "invalid argument")
+	assert.ErrorContains(t, err, "invalid argument")
 }
 
-func (s *S) TestProtect(c *C) {
-	mmap, err := gommap.Map(s.file.Fd(), gommap.PROT_READ, gommap.MAP_SHARED)
-	c.Assert(err, IsNil)
+func TestProtect(t *testing.T) {
+	f := setup(t)
+	mmap, err := gommap.Map(f.Fd(), gommap.PROT_READ, gommap.MAP_SHARED)
+	require.NoError(t, err)
 	defer mmap.UnsafeUnmap()
-	c.Assert([]byte(mmap), DeepEquals, testData)
+	assert.Equal(t, []byte(mmap), testData)
 
 	err = mmap.Protect(gommap.PROT_READ | gommap.PROT_WRITE)
-	c.Assert(err, IsNil)
+	assert.NoError(t, err)
 
 	// If this operation doesn't blow up tests, the call above worked.
 	mmap[9] = 'X'
 }
 
-func (s *S) TestLock(c *C) {
-	mmap, err := gommap.Map(s.file.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_PRIVATE)
-	c.Assert(err, IsNil)
+func TestLock(t *testing.T) {
+	f := setup(t)
+	mmap, err := gommap.Map(f.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_PRIVATE)
+	require.NoError(t, err)
 	defer mmap.UnsafeUnmap()
 
 	// A bit tricky to blackbox-test these.
 	err = mmap.Lock()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	err = mmap.Lock()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	err = mmap.Unlock()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 
 	err = mmap.Unlock()
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 }
 
-func (s *S) TestIsResidentUnderOnePage(c *C) {
-	mmap, err := gommap.Map(s.file.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_PRIVATE)
-	c.Assert(err, IsNil)
+func TestIsResidentUnderOnePage(t *testing.T) {
+	f := setup(t)
+	mmap, err := gommap.Map(f.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_PRIVATE)
+	require.NoError(t, err)
 	defer mmap.UnsafeUnmap()
 
 	mapped, err := mmap.IsResident()
-	c.Assert(err, IsNil)
-	c.Assert(mapped, DeepEquals, []bool{true})
+	require.NoError(t, err)
+	require.Equal(t, mapped, []bool{true})
 }
 
-func (s *S) TestIsResidentTwoPages(c *C) {
-	testPath := path.Join(c.MkDir(), "test.txt")
+func TestIsResidentTwoPages(t *testing.T) {
+	testPath := path.Join(t.TempDir(), "test.txt")
 	file, err := os.Create(testPath)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	defer file.Close()
 
-	file.Seek(int64(os.Getpagesize()*2-1), 0)
-	file.Write([]byte{'x'})
+	_, err = file.Seek(int64(os.Getpagesize()*2-1), 0)
+	require.NoError(t, err)
+	_, err = file.Write([]byte{'x'})
+	require.NoError(t, err)
 
 	mmap, err := gommap.Map(file.Fd(), gommap.PROT_READ|gommap.PROT_WRITE, gommap.MAP_PRIVATE)
-	c.Assert(err, IsNil)
+	require.NoError(t, err)
 	defer mmap.UnsafeUnmap()
 
 	// Not entirely a stable test, but should usually work.
@@ -168,12 +202,12 @@ func (s *S) TestIsResidentTwoPages(c *C) {
 	mmap[len(mmap)-1] = 'x'
 
 	mapped, err := mmap.IsResident()
-	c.Assert(err, IsNil)
-	c.Assert(mapped, DeepEquals, []bool{false, true})
+	require.NoError(t, err)
+	assert.Equal(t, mapped, []bool{false, true})
 
 	mmap[0] = 'x'
 
 	mapped, err = mmap.IsResident()
-	c.Assert(err, IsNil)
-	c.Assert(mapped, DeepEquals, []bool{true, true})
+	require.NoError(t, err)
+	assert.Equal(t, mapped, []bool{true, true})
 }

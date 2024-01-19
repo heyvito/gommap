@@ -1,4 +1,4 @@
-// This package offers the MMap type that manipulates a memory mapped file or
+// Package gommap offers the MMap type that manipulates a memory mapped file or
 // device.
 //
 // IMPORTANT NOTE (1): The MMap type is backed by an unsafe memory region,
@@ -10,8 +10,8 @@
 package gommap
 
 import (
+	"errors"
 	"os"
-	"reflect"
 	"syscall"
 	"unsafe"
 )
@@ -56,16 +56,12 @@ func MapAt(addr uintptr, fd uintptr, offset, length int64, prot ProtFlags, flags
 		length = stat.Size
 	}
 	addr, err := mmap_syscall(addr, uintptr(length), uintptr(prot), uintptr(flags), fd, offset)
-	if err != syscall.Errno(0) {
+	if !errors.Is(err, syscall.Errno(0)) {
 		return nil, err
 	}
-	mmap := MMap{}
-
-	dh := (*reflect.SliceHeader)(unsafe.Pointer(&mmap))
-	dh.Data = addr
-	dh.Len = int(length) // Hmmm.. truncating here feels like trouble.
-	dh.Cap = dh.Len
-	return mmap, nil
+	ptr := *(*unsafe.Pointer)(unsafe.Pointer(&addr))
+	//goland:noinspection ALL
+	return unsafe.Slice((*byte)(ptr), length), nil
 }
 
 // UnsafeUnmap deletes the memory mapped region defined by the mmap slice. This
@@ -73,8 +69,10 @@ func MapAt(addr uintptr, fd uintptr, offset, length int64, prot ProtFlags, flags
 // other slices based on it after this method has been called will crash the
 // application.
 func (mmap MMap) UnsafeUnmap() error {
-	rh := *(*reflect.SliceHeader)(unsafe.Pointer(&mmap))
-	_, _, err := syscall.Syscall(syscall.SYS_MUNMAP, uintptr(rh.Data), uintptr(rh.Len), 0)
+	rh := unsafe.SliceData(mmap)
+	rhPtr := unsafe.Pointer(rh)
+	size := len(mmap)
+	_, _, err := syscall.Syscall(syscall.SYS_MUNMAP, uintptr(rhPtr), uintptr(size), 0)
 	if err != 0 {
 		return err
 	}
@@ -88,8 +86,10 @@ func (mmap MMap) UnsafeUnmap() error {
 // (before the method returns) with MS_SYNC, or asynchronously (flushing is just
 // scheduled) with MS_ASYNC.
 func (mmap MMap) Sync(flags SyncFlags) error {
-	rh := *(*reflect.SliceHeader)(unsafe.Pointer(&mmap))
-	_, _, err := syscall.Syscall(syscall.SYS_MSYNC, uintptr(rh.Data), uintptr(rh.Len), uintptr(flags))
+	rh := unsafe.SliceData(mmap)
+	rhPtr := unsafe.Pointer(rh)
+	size := len(mmap)
+	_, _, err := syscall.Syscall(syscall.SYS_MSYNC, uintptr(rhPtr), uintptr(size), uintptr(flags))
 	if err != 0 {
 		return err
 	}
@@ -100,8 +100,10 @@ func (mmap MMap) Sync(flags SyncFlags) error {
 // region in terms of input/output paging within the memory region
 // defined by the mmap slice.
 func (mmap MMap) Advise(advice AdviseFlags) error {
-	rh := *(*reflect.SliceHeader)(unsafe.Pointer(&mmap))
-	_, _, err := syscall.Syscall(syscall.SYS_MADVISE, uintptr(rh.Data), uintptr(rh.Len), uintptr(advice))
+	rh := unsafe.SliceData(mmap)
+	rhPtr := unsafe.Pointer(rh)
+	size := len(mmap)
+	_, _, err := syscall.Syscall(syscall.SYS_MADVISE, uintptr(rhPtr), uintptr(size), uintptr(advice))
 	if err != 0 {
 		return err
 	}
@@ -111,8 +113,10 @@ func (mmap MMap) Advise(advice AdviseFlags) error {
 // Protect changes the protection flags for the memory mapped region
 // defined by the mmap slice.
 func (mmap MMap) Protect(prot ProtFlags) error {
-	rh := *(*reflect.SliceHeader)(unsafe.Pointer(&mmap))
-	_, _, err := syscall.Syscall(syscall.SYS_MPROTECT, uintptr(rh.Data), uintptr(rh.Len), uintptr(prot))
+	rh := unsafe.SliceData(mmap)
+	rhPtr := unsafe.Pointer(rh)
+	size := len(mmap)
+	_, _, err := syscall.Syscall(syscall.SYS_MPROTECT, uintptr(rhPtr), uintptr(size), uintptr(prot))
 	if err != 0 {
 		return err
 	}
@@ -122,8 +126,10 @@ func (mmap MMap) Protect(prot ProtFlags) error {
 // Lock locks the mapped region defined by the mmap slice,
 // preventing it from being swapped out.
 func (mmap MMap) Lock() error {
-	rh := *(*reflect.SliceHeader)(unsafe.Pointer(&mmap))
-	_, _, err := syscall.Syscall(syscall.SYS_MLOCK, uintptr(rh.Data), uintptr(rh.Len), 0)
+	rh := unsafe.SliceData(mmap)
+	rhPtr := unsafe.Pointer(rh)
+	size := len(mmap)
+	_, _, err := syscall.Syscall(syscall.SYS_MLOCK, uintptr(rhPtr), uintptr(size), 0)
 	if err != 0 {
 		return err
 	}
@@ -133,8 +139,10 @@ func (mmap MMap) Lock() error {
 // Unlock unlocks the mapped region defined by the mmap slice,
 // allowing it to swap out again.
 func (mmap MMap) Unlock() error {
-	rh := *(*reflect.SliceHeader)(unsafe.Pointer(&mmap))
-	_, _, err := syscall.Syscall(syscall.SYS_MUNLOCK, uintptr(rh.Data), uintptr(rh.Len), 0)
+	rh := unsafe.SliceData(mmap)
+	rhPtr := unsafe.Pointer(rh)
+	size := len(mmap)
+	_, _, err := syscall.Syscall(syscall.SYS_MUNLOCK, uintptr(rhPtr), uintptr(size), 0)
 	if err != 0 {
 		return err
 	}
@@ -146,9 +154,12 @@ func (mmap MMap) Unlock() error {
 func (mmap MMap) IsResident() ([]bool, error) {
 	pageSize := os.Getpagesize()
 	result := make([]bool, (len(mmap)+pageSize-1)/pageSize)
-	rh := *(*reflect.SliceHeader)(unsafe.Pointer(&mmap))
-	resulth := *(*reflect.SliceHeader)(unsafe.Pointer(&result))
-	_, _, err := syscall.Syscall(syscall.SYS_MINCORE, uintptr(rh.Data), uintptr(rh.Len), uintptr(resulth.Data))
+	rh := unsafe.SliceData(mmap)
+	rhPtr := unsafe.Pointer(rh)
+	size := len(mmap)
+	resulth := unsafe.SliceData(result)
+	resultPtr := unsafe.Pointer(resulth)
+	_, _, err := syscall.Syscall(syscall.SYS_MINCORE, uintptr(rhPtr), uintptr(size), uintptr(resultPtr))
 	for i := range result {
 		*(*uint8)(unsafe.Pointer(&result[i])) &= 1
 	}
