@@ -1,5 +1,7 @@
 # gommap
 
+[![Go Reference](https://pkg.go.dev/badge/github.com/heyvito/gommap.svg)](https://pkg.go.dev/github.com/heyvito/gommap)
+
 This is a modernization of [launchpad.net/gommap](https://launchpad.net/gommap)
 to remove deprecated constructs and move tests to a more conventional framework
 as provided by the `testing` package.
